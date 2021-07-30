@@ -54,6 +54,26 @@ void MKLDNNReshapeNode::getSupportedDescriptors() {
         IE_THROW() << "Incorrect number of output edges for layer " << getName();
 }
 
+std::vector<mkldnn::memory::format_tag> MKLDNNReshapeNode::getDataFormats(const int ndims) const {
+    switch (ndims) {
+        case 1:
+            return {memory::format_tag::a};
+        case 2:
+            return {memory::format_tag::ab, memory::format_tag::ba};
+        case 3:
+            return {memory::format_tag::abc, memory::format_tag::acb};
+        case 4:
+            return {memory::format_tag::abcd, memory::format_tag::acdb};
+        case 5:
+            return {memory::format_tag::abcde};
+        case 6:
+            return {memory::format_tag::abcdef};
+        defalut:
+            return {memory::format_tag::undef};
+    }
+    return {memory::format_tag::undef};
+}
+
 void MKLDNNReshapeNode::initSupportedPrimitiveDescriptors() {
     if (!supportedPrimitiveDescriptors.empty())
         return;
@@ -67,19 +87,33 @@ void MKLDNNReshapeNode::initSupportedPrimitiveDescriptors() {
         inPrec = outPrec;
 
     NodeConfig config;
-    config.dynBatchSupport = true;
-    config.inConfs.resize(getParentEdges().size());
-    auto& creatorsMap = BlockedDescCreator::getCommonCreators();
-    for (size_t i = 0; i < getParentEdges().size(); i++) {
-        config.inConfs[i].inPlace = -1;
-        config.inConfs[i].constant = false;
-        config.inConfs[i].desc = creatorsMap.at(LayoutType::ncsp)->createSharedDesc(inPrec, getInputShapeAtPort(i));
+    auto parent = getParentEdgeAt(0)->getParent();
+    auto prSupportedDesc = parent->getSupportedPrimitiveDescriptors();
+    auto outDims = getChildEdgeAt(0)->getDims().ndims();
+    for (auto prDescInfo : prSupportedDesc) {
+        auto inNum = getParentEdgeAt(0)->getInputNum();
+        auto prOutConfs = prDescInfo.getConfig().outConfs[inNum];
+        auto inLayout = prOutConfs.desc.getLayout();
+        auto inFmt = MKLDNNMemory::Convert(inLayout);
+        for (auto outFmt : getDataFormats(outDims)) {
+            InferenceEngine::LayerConfig config;
+            config.dynBatchSupport = true;
+            config.inConfs.resize(getParentEdges().size());
+            for (int i = 0; i < getParentEdges().size(); i++) {
+                config.inConfs[i].inPlace = -1;
+                config.inConfs[i].constant = false;
+                if (i == 0)
+                    config.inConfs[0].desc = MKLDNNMemoryDesc(MKLDNNDims(prOutConfs.desc.getDims()), inputDataType, inFmt);
+                else
+                    config.inConfs[i].desc = MKLDNNMemoryDesc(getParentEdgeAt(i)->getDims(), inputDataType);
+            }
+            config.outConfs.resize(1);
+            config.outConfs[0].inPlace = 0;
+            config.outConfs[0].constant = false;
+            config.outConfs[0].desc = MKLDNNMemoryDesc(getChildEdgeAt(0)->getDims(), outputDataType, outFmt);
+            supportedPrimitiveDescriptors.emplace_back(config, impl_desc_type::unknown);
+        }
     }
-    config.outConfs.resize(1);
-    config.outConfs[0].inPlace = 0;
-    config.outConfs[0].constant = false;
-    config.outConfs[0].desc = creatorsMap.at(LayoutType::ncsp)->createSharedDesc(outPrec, getOutputShapeAtPort(0));
-    supportedPrimitiveDescriptors.emplace_back(config, impl_desc_type::unknown);
 }
 
 void MKLDNNReshapeNode::createPrimitive() {

@@ -31,6 +31,7 @@ public:
     }
 
     static bool isSupportedOperation(const std::shared_ptr<const ngraph::Node>& op, std::string& errorMessage) noexcept;
+    std::vector<mkldnn::memory::format_tag> getDataFormats(const int ndims) const;
 };
 
 }  // namespace MKLDNNPlugin
